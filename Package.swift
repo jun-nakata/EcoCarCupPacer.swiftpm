@@ -4,13 +4,13 @@ import PackageDescription
 import AppleProductTypes
 
 let package = Package(
-    name: "Test2",
+    name: "EcoCarCupPacer",
     platforms: [
         .iOS("18.0")
     ],
     products: [
         .iOSApplication(
-            name: "Test2",
+            name: "Eco Car Cup Pacer",
             targets: ["AppModule"],
             bundleIdentifier: "com.example.Test2",
             teamIdentifier: "",
