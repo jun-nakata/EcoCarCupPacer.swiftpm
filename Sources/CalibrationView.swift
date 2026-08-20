@@ -7,6 +7,8 @@ struct CalibrationView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var showingResetConfirmation = false
+    @State private var showingCoursePathEditor = false
+    @State private var showingCoursePathResetConfirmation = false
     @State private var latitudeText: String = ""
     @State private var longitudeText: String = ""
     @State private var headingText: String = ""
@@ -88,6 +90,37 @@ struct CalibrationView: View {
                 }
 
                 Section {
+                    Button {
+                        showingCoursePathEditor = true
+                    } label: {
+                        Label("走行ラインを編集", systemImage: "map")
+                    }
+
+                    if let path = pacer.coursePath {
+                        LabeledContent("点の数", value: "\(path.points.count)")
+                        LabeledContent("コース長", value: String(format: "%.0f m", path.totalLength))
+                        LabeledContent("タイム情報") {
+                            Text(path.referencePoints(scaledToTargetSeconds: pacer.targetLapSeconds) != nil ? "あり（インポート由来）" : "なし")
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Button(role: .destructive) {
+                            showingCoursePathResetConfirmation = true
+                        } label: {
+                            Label("走行ラインを削除", systemImage: "trash")
+                        }
+                    } else {
+                        Text("未設定（設定すると、直線距離ではなく実際の走行ラインに沿った残り距離・時間を計算します）")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("走行ライン（コースパス）")
+                } footer: {
+                    Text("地図をタップして点を置くか、GPSデータロガー等のGPX/CSVファイルを読み込んで、コントロールラインから1周分の走行ラインを設定できます。設定は任意で、無くても従来通り動作します。")
+                }
+
+                Section {
                     Stepper(value: $pacer.targetLapSeconds, in: 60...600, step: 1) {
                         LabeledContent("目標ラップタイム", value: targetTimeText)
                     }
@@ -123,6 +156,19 @@ struct CalibrationView: View {
                     pacer.resetControlLine()
                 }
                 Button("キャンセル", role: .cancel) {}
+            }
+            .confirmationDialog(
+                "走行ラインを削除しますか？",
+                isPresented: $showingCoursePathResetConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("削除", role: .destructive) {
+                    pacer.clearCoursePath()
+                }
+                Button("キャンセル", role: .cancel) {}
+            }
+            .sheet(isPresented: $showingCoursePathEditor) {
+                CoursePathEditorView(pacer: pacer, locationManager: locationManager)
             }
             .onAppear {
                 guard let line = pacer.controlLine, latitudeText.isEmpty else { return }

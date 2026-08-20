@@ -71,3 +71,113 @@ enum PaceState: Equatable {
     /// 目標より進みすぎている → 減速すべき（差は秒）
     case slowDown(seconds: Double)
 }
+
+/// 走行ライン（コースパス）上の1点。地図タップ、またはCSV/GPXの読み込みで得られる。
+struct CoursePoint: Codable, Equatable, Hashable {
+    var latitude: Double
+    var longitude: Double
+    /// ファイル等にタイムスタンプがあり、経路の最初の点からの経過秒が分かる場合のみ設定される。
+    var elapsedSeconds: Double?
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
+/// コントロールラインから1周分の走行ラインを表す点列。
+/// points[0] がコントロールライン、以降を順にたどって1周し、最後の点が再びライン付近に戻る想定。
+struct CoursePath: Codable, Equatable {
+    var points: [CoursePoint]
+
+    var isUsable: Bool { points.count >= 2 }
+
+    /// 各点までの累積距離（points[0]を0とする、m）
+    var cumulativeDistances: [Double] {
+        guard points.count > 1 else { return points.map { _ in 0 } }
+        var result = [0.0]
+        var total = 0.0
+        for i in 1..<points.count {
+            total += points[i - 1].coordinate.distanceInMeters(to: points[i].coordinate)
+            result.append(total)
+        }
+        return result
+    }
+
+    var totalLength: Double { cumulativeDistances.last ?? 0 }
+
+    /// 現在地をこのコースパス上に投影し、開始点からの経路に沿った距離と、経路からの垂直方向のズレを返す。
+    /// - previousDistance: 直前の投影結果（連続性を保つための探索窓の中心）。nilなら全区間から探索する。
+    ///
+    /// コースが自己交差に近い区間（ヘアピン、ピット入口など）を持つ場合、全区間から単純に最近傍を
+    /// 探すと誤って別の区間に飛んでしまうことがあるため、直前の位置付近を優先的に探索し、
+    /// 妥当な候補が無い場合のみ全区間探索にフォールバックする。
+    func project(_ coordinate: CLLocationCoordinate2D, near previousDistance: Double?, searchWindow: Double = 120, fallbackThreshold: Double = 80) -> (distanceAlongPath: Double, lateralDistance: Double)? {
+        guard points.count > 1 else { return nil }
+        let distances = cumulativeDistances
+
+        func bestMatch(restrictToWindow: Bool) -> (distance: Double, lateral: Double)? {
+            var bestDistanceAlong = 0.0
+            var bestLateral = Double.greatestFiniteMagnitude
+            for i in 0..<(points.count - 1) {
+                if restrictToWindow, let previousDistance {
+                    let segStart = distances[i]
+                    let withinWindow = segStart > previousDistance - searchWindow / 2 && segStart < previousDistance + searchWindow
+                    guard withinWindow else { continue }
+                }
+                let (lateral, fraction) = Self.projectOntoSegment(coordinate, a: points[i].coordinate, b: points[i + 1].coordinate)
+                if lateral < bestLateral {
+                    bestLateral = lateral
+                    let segmentLength = distances[i + 1] - distances[i]
+                    bestDistanceAlong = distances[i] + fraction * segmentLength
+                }
+            }
+            return bestLateral == .greatestFiniteMagnitude ? nil : (bestDistanceAlong, bestLateral)
+        }
+
+        if let windowed = bestMatch(restrictToWindow: true), windowed.lateral <= fallbackThreshold {
+            return (windowed.distance, windowed.lateral)
+        }
+        guard let full = bestMatch(restrictToWindow: false) else { return nil }
+        return (full.distance, full.lateral)
+    }
+
+    /// 点にインポート時の経過秒が付いている場合、それを目標ラップタイムに換算した基準ペースへ変換する。
+    func referencePoints(scaledToTargetSeconds target: Double) -> [ReferencePoint]? {
+        guard points.count > 1, let lastTime = points.last?.elapsedSeconds, lastTime > 0 else { return nil }
+        let distances = cumulativeDistances
+        var result: [ReferencePoint] = []
+        for (index, point) in points.enumerated() {
+            guard let time = point.elapsedSeconds else { continue }
+            result.append(ReferencePoint(distance: distances[index], time: time * target / lastTime))
+        }
+        return result.count >= 2 ? result : nil
+    }
+
+    /// 点a→bの線分に対する、点の垂直距離(m)と、a側からの内分率(0〜1)を返す。
+    /// メートル換算は線分開始点a付近を原点とした正距円筒近似（区間が数十〜数百m程度なら十分な精度）。
+    private static func projectOntoSegment(_ point: CLLocationCoordinate2D, a: CLLocationCoordinate2D, b: CLLocationCoordinate2D) -> (lateral: Double, fraction: Double) {
+        let latRad = a.latitude * .pi / 180
+        let metersPerDegreeLatitude = 111_320.0
+        let metersPerDegreeLongitude = 111_320.0 * cos(latRad)
+
+        func toXY(_ c: CLLocationCoordinate2D) -> (x: Double, y: Double) {
+            ((c.longitude - a.longitude) * metersPerDegreeLongitude, (c.latitude - a.latitude) * metersPerDegreeLatitude)
+        }
+
+        let ab = toXY(b)
+        let ap = toXY(point)
+        let abLengthSquared = ab.x * ab.x + ab.y * ab.y
+        let fraction = abLengthSquared > 0 ? max(0, min(1, (ap.x * ab.x + ap.y * ab.y) / abLengthSquared)) : 0
+        let closestX = fraction * ab.x
+        let closestY = fraction * ab.y
+        let dx = ap.x - closestX
+        let dy = ap.y - closestY
+        return (sqrt(dx * dx + dy * dy), fraction)
+    }
+}
+
+extension CLLocationCoordinate2D {
+    func distanceInMeters(to other: CLLocationCoordinate2D) -> Double {
+        CLLocation(latitude: latitude, longitude: longitude).distance(from: CLLocation(latitude: other.latitude, longitude: other.longitude))
+    }
+}

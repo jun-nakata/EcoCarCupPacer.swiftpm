@@ -26,6 +26,13 @@ final class LapPacer {
         didSet { persistTargetLapSeconds() }
     }
 
+    /// あらかじめ定義された走行ライン（コントロールラインから1周分の点列）。
+    /// 設定されていれば、その経路に沿った距離を使って残り距離・基準ペースを計算する。
+    /// 未設定の場合は、直線距離や実走行のGPS軌跡を使う従来の方式にフォールバックする。
+    private(set) var coursePath: CoursePath? {
+        didSet { persistCoursePath() }
+    }
+
     // MARK: - リアルタイム状態（UI表示用）
 
     private(set) var currentSpeedKmh: Double?
@@ -48,6 +55,8 @@ final class LapPacer {
 
     private var currentLapPoints: [ReferencePoint] = []
     private var odometerSinceCrossing: Double = 0
+    /// コースパス上での現在の進行距離（コースパス未設定時はnil）。次回投影の探索窓の中心にも使う。
+    private var lastPathDistance: Double?
     private var lapStartDate: Date?
     private var lastCrossingDate: Date?
     private var previousLocation: CLLocation?
@@ -76,6 +85,7 @@ final class LapPacer {
         static let controlLine = "pace.controlLine"
         static let targetLapSeconds = "pace.targetLapSeconds"
         static let referenceLap = "pace.referenceLap"
+        static let coursePath = "pace.coursePath"
     }
 
     init() {
@@ -91,6 +101,10 @@ final class LapPacer {
         if let data = defaults.data(forKey: DefaultsKey.referenceLap),
            let decoded = try? JSONDecoder().decode([ReferencePoint].self, from: data) {
             referenceLap = decoded
+        }
+        if let data = defaults.data(forKey: DefaultsKey.coursePath),
+           let decoded = try? JSONDecoder().decode(CoursePath.self, from: data) {
+            coursePath = decoded
         }
         remainingToTarget = targetLapSeconds
         paceState = controlLine == nil ? .notCalibrated : .noReference
@@ -129,6 +143,7 @@ final class LapPacer {
         lapStartDate = nil
         lastCrossingDate = nil
         odometerSinceCrossing = 0
+        lastPathDistance = nil
         currentLapPoints = []
         previousAlong = nil
         elapsedSinceCrossing = 0
@@ -136,7 +151,24 @@ final class LapPacer {
         paceState = .noReference
     }
 
-    /// コントロールラインと基準ラップ・履歴をすべて消去する。
+    /// 走行ライン（コースパス）を設定する。地図タップ、またはCSV/GPXの読み込みで作った点列を渡す。
+    /// 点にインポート時の経過秒が付いていれば、その軌跡をそのまま目標タイムに換算した基準ペースとして
+    /// 即座に採用する（実走行1周を待たずにペース判定が有効になる）。
+    func setCoursePath(_ path: CoursePath) {
+        coursePath = path
+        if let imported = path.referencePoints(scaledToTargetSeconds: targetLapSeconds) {
+            referenceLap = imported
+        }
+        lastPathDistance = lapStartDate != nil ? 0 : nil
+    }
+
+    /// 走行ライン（コースパス）だけを消去する。コントロールラインや基準ペースはそのまま残る。
+    func clearCoursePath() {
+        coursePath = nil
+        lastPathDistance = nil
+    }
+
+    /// コントロールラインと基準ラップ・履歴をすべて消去する。走行ライン（コースパス）は残る。
     func resetControlLine() {
         controlLine = nil
         referenceLap = nil
@@ -144,6 +176,7 @@ final class LapPacer {
         lapStartDate = nil
         lastCrossingDate = nil
         odometerSinceCrossing = 0
+        lastPathDistance = nil
         currentLapPoints = []
         previousAlong = nil
         elapsedSinceCrossing = 0
@@ -165,7 +198,18 @@ final class LapPacer {
             return
         }
 
-        distanceToLineMeters = location.distance(from: line.location)
+        // 走行ライン（コースパス）が設定されていれば、それに沿った距離を使う方が
+        // 直線距離や実測オドメーターより正確なので優先する。
+        let pathProjection = (coursePath?.isUsable == true)
+            ? coursePath?.project(location.coordinate, near: lastPathDistance)
+            : nil
+
+        if let pathProjection {
+            lastPathDistance = pathProjection.distanceAlongPath
+            distanceToLineMeters = max(0, (coursePath?.totalLength ?? 0) - pathProjection.distanceAlongPath)
+        } else {
+            distanceToLineMeters = location.distance(from: line.location)
+        }
 
         let projection = line.project(location.coordinate)
         checkForCrossing(prevAlong: previousAlong, along: projection.along, lateral: projection.lateral, prevLocation: previousLocation, location: location)
@@ -176,14 +220,23 @@ final class LapPacer {
             elapsedSinceCrossing = elapsed
             remainingToTarget = targetLapSeconds - elapsed
 
-            if let prev = previousLocation {
-                let delta = location.distance(from: prev)
-                if delta > 1.0 {
-                    odometerSinceCrossing += delta
-                    currentLapPoints.append(ReferencePoint(distance: odometerSinceCrossing, time: elapsed))
+            let progressDistance: Double
+            if let pathProjection {
+                progressDistance = pathProjection.distanceAlongPath
+                if currentLapPoints.last.map({ progressDistance - $0.distance > 0.5 }) ?? true {
+                    currentLapPoints.append(ReferencePoint(distance: progressDistance, time: elapsed))
                 }
+            } else {
+                if let prev = previousLocation {
+                    let delta = location.distance(from: prev)
+                    if delta > 1.0 {
+                        odometerSinceCrossing += delta
+                        currentLapPoints.append(ReferencePoint(distance: odometerSinceCrossing, time: elapsed))
+                    }
+                }
+                progressDistance = odometerSinceCrossing
             }
-            updatePaceState()
+            updatePaceState(usingDistance: progressDistance)
         }
 
         previousLocation = location
@@ -237,6 +290,7 @@ final class LapPacer {
         lapStartDate = date
         lastCrossingDate = date
         odometerSinceCrossing = 0
+        lastPathDistance = (coursePath?.isUsable == true) ? 0 : nil
         currentLapPoints = []
         elapsedSinceCrossing = 0
         remainingToTarget = targetLapSeconds
@@ -245,12 +299,12 @@ final class LapPacer {
 
     // MARK: - ペース判定
 
-    private func updatePaceState() {
+    private func updatePaceState(usingDistance distance: Double) {
         guard let reference = referenceLap, reference.count >= 2 else {
             paceState = .noReference
             return
         }
-        let scheduled = scheduledTime(forDistance: odometerSinceCrossing, in: reference)
+        let scheduled = scheduledTime(forDistance: distance, in: reference)
         // delta > 0: 基準ペースより遅れている(加速すべき) / delta < 0: 進みすぎている(減速すべき)
         let delta = elapsedSinceCrossing - scheduled
 
@@ -301,6 +355,15 @@ final class LapPacer {
             defaults.set(data, forKey: DefaultsKey.referenceLap)
         } else {
             defaults.removeObject(forKey: DefaultsKey.referenceLap)
+        }
+    }
+
+    private func persistCoursePath() {
+        let defaults = UserDefaults.standard
+        if let path = coursePath, let data = try? JSONEncoder().encode(path) {
+            defaults.set(data, forKey: DefaultsKey.coursePath)
+        } else {
+            defaults.removeObject(forKey: DefaultsKey.coursePath)
         }
     }
 }
