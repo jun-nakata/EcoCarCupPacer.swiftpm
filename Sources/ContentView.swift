@@ -1,187 +1,253 @@
 import SwiftUI
+import CoreLocation
 
 struct ContentView: View {
-    @State private var pomodoro = PomodoroTimer()
-    @State private var showingPicker = false
+    @State private var locationManager = LocationManager()
+    @State private var pacer = LapPacer()
+    @State private var showingCalibration = false
 
     var body: some View {
-        ZStack {
-            phaseBackground.ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                Color(.systemBackground).ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                headerView
-                    .padding(.top, 60)
+                VStack(spacing: 20) {
+                    remainingTimeHeader
 
-                Spacer()
+                    Spacer(minLength: 0)
 
-                donutChart
-                    .padding(.horizontal, 40)
+                    paceIndicator
 
-                Spacer()
+                    Spacer(minLength: 0)
 
-                controlButton
-                    .padding(.bottom, 52)
+                    infoRow
+
+                    if !pacer.laps.isEmpty {
+                        lapHistory
+                    }
+                }
+                .padding()
             }
-        }
-        .animation(.easeInOut(duration: 0.4), value: pomodoro.phase)
-        .confirmationDialog(
-            "セッション数を選択",
-            isPresented: $showingPicker,
-            titleVisibility: .visible
-        ) {
-            ForEach(1...5, id: \.self) { n in
-                Button("\(n)セッション（約\(n * 30)分）") {
-                    pomodoro.start(sessions: n)
+            .navigationTitle("Eco Car Cup Pacer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingCalibration = true
+                    } label: {
+                        Image(systemName: "flag.checkered.circle")
+                            .font(.title2)
+                    }
                 }
             }
-            Button("キャンセル", role: .cancel) {}
+            .sheet(isPresented: $showingCalibration) {
+                CalibrationView(pacer: pacer, locationManager: locationManager)
+            }
+            .onAppear {
+                UIApplication.shared.isIdleTimerDisabled = true
+                locationManager.onLocationUpdate = { location in
+                    pacer.ingest(location)
+                }
+                locationManager.requestAuthorization()
+                locationManager.start()
+            }
+            .onDisappear {
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
         }
     }
 
-    // MARK: - Subviews
+    // MARK: - 残り時間
+
+    private var remainingTimeHeader: some View {
+        VStack(spacing: 4) {
+            Text("目標 \(formattedTarget) まで")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text(remainingText)
+                .font(.system(size: 56, weight: .bold, design: .monospaced))
+                .foregroundStyle(pacer.remainingToTarget < 0 ? .red : .primary)
+                .contentTransition(.numericText())
+                .animation(.none, value: remainingText)
+        }
+    }
+
+    private var remainingText: String {
+        let r = pacer.remainingToTarget
+        let isOver = r < 0
+        let a = abs(r)
+        let m = Int(a) / 60
+        let s = a - Double(m * 60)
+        let base = String(format: "%d:%05.2f", m, s)
+        return isOver ? "+\(base)" : base
+    }
+
+    private var formattedTarget: String {
+        let m = Int(pacer.targetLapSeconds) / 60
+        let s = Int(pacer.targetLapSeconds) % 60
+        return String(format: "%d'%02d\"00", m, s)
+    }
+
+    // MARK: - ペース表示（上下矢印）
 
     @ViewBuilder
-    private var headerView: some View {
-        if pomodoro.phase == .idle {
-            VStack(spacing: 6) {
-                Text("ポモドーロタイマー")
-                    .font(.title2.bold())
-                Text("25分集中・5分休憩のサイクル")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-        } else {
-            VStack(spacing: 10) {
-                Text(phaseLabel)
-                    .font(.title2.bold())
-                    .foregroundStyle(accentColor)
-                sessionDots
-            }
-        }
-    }
-
-    private var sessionDots: some View {
-        HStack(spacing: 10) {
-            ForEach(1...pomodoro.totalSessions, id: \.self) { i in
+    private var paceIndicator: some View {
+        VStack(spacing: 12) {
+            ZStack {
                 Circle()
-                    .fill(i <= pomodoro.currentSession ? accentColor : Color.secondary.opacity(0.25))
-                    .frame(width: 10, height: 10)
-                    .animation(.spring, value: pomodoro.currentSession)
+                    .fill(paceColor.opacity(0.15))
+                    .frame(width: 220, height: 220)
+
+                Image(systemName: paceSymbol)
+                    .font(.system(size: 96, weight: .bold))
+                    .foregroundStyle(paceColor)
+                    .symbolEffect(.pulse, isActive: isUrgentPace)
             }
-        }
-    }
 
-    private var donutChart: some View {
-        ZStack {
-            // Track ring
-            Circle()
-                .stroke(Color.secondary.opacity(0.15), lineWidth: 30)
+            Text(paceLabel)
+                .font(.title2.bold())
+                .foregroundStyle(paceColor)
 
-            // Progress ring
-            Circle()
-                .trim(from: 0, to: ringProgress)
-                .stroke(
-                    accentColor,
-                    style: StrokeStyle(lineWidth: 30, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .animation(.linear(duration: 1), value: pomodoro.remainingSeconds)
-
-            // Center
-            centerContent
-        }
-    }
-
-    @ViewBuilder
-    private var centerContent: some View {
-        VStack(spacing: 8) {
-            switch pomodoro.phase {
-            case .idle:
-                Image(systemName: "timer")
-                    .font(.system(size: 54))
-                    .foregroundStyle(.secondary)
-
-            case .work, .shortBreak:
-                Text(pomodoro.timeString)
-                    .font(.system(size: 60, weight: .bold, design: .monospaced))
-                    .contentTransition(.numericText())
-                    .animation(.none, value: pomodoro.timeString)
-                Text(pomodoro.phase == .work ? "作業中" : "休憩中")
+            if let subtitle = paceSubtitle {
+                Text(subtitle)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-
-            case .complete:
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 64))
-                    .foregroundStyle(.green)
-                Text("完了！")
-                    .font(.title.bold())
             }
         }
     }
 
-    @ViewBuilder
-    private var controlButton: some View {
-        switch pomodoro.phase {
-        case .idle, .complete:
-            Button {
-                showingPicker = true
-            } label: {
-                Text(pomodoro.phase == .complete ? "もう一度" : "開始")
-                    .font(.title3.bold())
-                    .frame(width: 200, height: 56)
-                    .background(accentColor)
-                    .foregroundStyle(.white)
-                    .clipShape(Capsule())
+    private var paceSymbol: String {
+        switch pacer.paceState {
+        case .notCalibrated: return "location.slash"
+        case .noReference: return "hourglass"
+        case .onPace: return "checkmark.circle.fill"
+        case .speedUp: return "arrow.up.circle.fill"
+        case .slowDown: return "arrow.down.circle.fill"
+        }
+    }
+
+    private var paceColor: Color {
+        switch pacer.paceState {
+        case .notCalibrated: return .gray
+        case .noReference: return .gray
+        case .onPace: return .green
+        case .speedUp: return .blue
+        case .slowDown: return .red
+        }
+    }
+
+    private var paceLabel: String {
+        switch pacer.paceState {
+        case .notCalibrated: return "未設定"
+        case .noReference: return "基準ラップ計測中"
+        case .onPace: return "このペースでOK"
+        case .speedUp: return "加速"
+        case .slowDown: return "減速"
+        }
+    }
+
+    private var paceSubtitle: String? {
+        switch pacer.paceState {
+        case .notCalibrated:
+            return "コントロールラインを設定してください"
+        case .noReference:
+            return "次の周からペース判定が有効になります"
+        case .onPace:
+            return nil
+        case .speedUp(let seconds):
+            return String(format: "基準より %.1f 秒遅れています", seconds)
+        case .slowDown(let seconds):
+            return String(format: "基準より %.1f 秒進みすぎています", seconds)
+        }
+    }
+
+    private var isUrgentPace: Bool {
+        switch pacer.paceState {
+        case .speedUp(let s), .slowDown(let s):
+            return s > 1.5
+        default:
+            return false
+        }
+    }
+
+    // MARK: - 距離・速度
+
+    private var infoRow: some View {
+        HStack(spacing: 0) {
+            infoTile(title: "ラインまで", value: distanceText, unit: "m")
+            Divider().frame(height: 44)
+            infoTile(title: "速度", value: speedText, unit: "km/h")
+            Divider().frame(height: 44)
+            infoTile(title: "GPS精度", value: accuracyText, unit: "m")
+        }
+    }
+
+    private func infoTile(title: String, value: String, unit: String) -> some View {
+        VStack(spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(.title3.monospacedDigit().bold())
+                Text(unit)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
+        }
+        .frame(maxWidth: .infinity)
+    }
 
-        case .work, .shortBreak:
-            Button {
-                pomodoro.reset()
-            } label: {
-                Text("リセット")
-                    .font(.title3.bold())
-                    .frame(width: 200, height: 56)
-                    .background(Color.secondary.opacity(0.15))
-                    .foregroundStyle(.primary)
-                    .clipShape(Capsule())
+    private var distanceText: String {
+        guard let d = pacer.distanceToLineMeters else { return "--" }
+        return String(format: "%.0f", d)
+    }
+
+    private var speedText: String {
+        guard let s = pacer.currentSpeedKmh else { return "--" }
+        return String(format: "%.0f", s)
+    }
+
+    private var accuracyText: String {
+        guard let a = pacer.horizontalAccuracy else { return "--" }
+        return String(format: "±%.0f", a)
+    }
+
+    // MARK: - ラップ履歴
+
+    private var lapHistory: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("ラップ履歴")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(pacer.laps.prefix(8).enumerated()), id: \.element.id) { index, lap in
+                        lapChip(number: pacer.laps.count - index, lap: lap)
+                    }
+                }
             }
         }
     }
 
-    // MARK: - Helpers
+    private func lapChip(number: Int, lap: LapRecord) -> some View {
+        let delta = lap.duration - pacer.targetLapSeconds
+        let m = Int(lap.duration) / 60
+        let s = lap.duration - Double(m * 60)
 
-    private var ringProgress: Double {
-        switch pomodoro.phase {
-        case .idle:    return 1.0
-        case .complete: return 0.0
-        default:       return pomodoro.progress
+        return VStack(spacing: 2) {
+            Text("Lap \(number)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(String(format: "%d:%05.2f", m, s))
+                .font(.callout.monospacedDigit().bold())
+            Text(String(format: "%+.2f", delta))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(abs(delta) < 0.5 ? .green : (delta < 0 ? .red : .blue))
         }
-    }
-
-    private var accentColor: Color {
-        switch pomodoro.phase {
-        case .idle:       return .blue
-        case .work:       return .orange
-        case .shortBreak: return .teal
-        case .complete:   return .green
-        }
-    }
-
-    private var phaseBackground: Color {
-        switch pomodoro.phase {
-        case .idle, .complete: return Color(.systemBackground)
-        case .work:            return .orange.opacity(0.04)
-        case .shortBreak:      return .teal.opacity(0.04)
-        }
-    }
-
-    private var phaseLabel: String {
-        switch pomodoro.phase {
-        case .idle:       return "待機中"
-        case .work:       return "作業 \(pomodoro.currentSession) / \(pomodoro.totalSessions)"
-        case .shortBreak: return "休憩 \(pomodoro.currentSession) / \(pomodoro.totalSessions)"
-        case .complete:   return "完了"
-        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
