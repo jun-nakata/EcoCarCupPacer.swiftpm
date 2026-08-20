@@ -60,22 +60,28 @@ struct ContentView: View {
     // MARK: - 残り時間
 
     private var remainingTimeHeader: some View {
-        VStack(spacing: 4) {
-            Text("目標 \(formattedTarget) まで")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text(remainingText)
-                .font(.system(size: 56, weight: .bold, design: .monospaced))
-                .foregroundStyle(pacer.remainingToTarget < 0 ? .red : .primary)
-                .contentTransition(.numericText())
-                .animation(.none, value: remainingText)
+        TimelineView(.periodic(from: .now, by: 0.05)) { context in
+            let remaining = liveRemaining(at: context.date)
+            VStack(spacing: 4) {
+                Text("目標 \(formattedTarget) まで")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text(remainingText(for: remaining))
+                    .font(.system(size: 56, weight: .bold, design: .monospaced))
+                    .foregroundStyle(remaining < 0 ? .red : .primary)
+            }
         }
     }
 
-    private var remainingText: String {
-        let r = pacer.remainingToTarget
-        let isOver = r < 0
-        let a = abs(r)
+    /// GPSの更新頻度に関わらず滑らかにカウントダウンさせるため、壁時計時刻から直接計算する。
+    private func liveRemaining(at now: Date) -> Double {
+        guard let start = pacer.lapStartDate else { return pacer.remainingToTarget }
+        return pacer.targetLapSeconds - now.timeIntervalSince(start)
+    }
+
+    private func remainingText(for value: Double) -> String {
+        let isOver = value < 0
+        let a = abs(value)
         let m = Int(a) / 60
         let s = a - Double(m * 60)
         let base = String(format: "%d:%05.2f", m, s)
@@ -98,11 +104,9 @@ struct ContentView: View {
                     .fill(paceColor.opacity(0.15))
                     .frame(width: 220, height: 220)
 
-                Image(systemName: paceSymbol)
-                    .font(.system(size: 96, weight: .bold))
-                    .foregroundStyle(paceColor)
-                    .symbolEffect(.pulse, isActive: isUrgentPace)
+                paceGlyph
             }
+            .frame(width: 220, height: 220)
 
             Text(paceLabel)
                 .font(.title2.bold())
@@ -113,6 +117,52 @@ struct ContentView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// 加速・減速時は、程度に応じてシェブロンの数と色の濃さを変えて段階的に表示する。
+    @ViewBuilder
+    private var paceGlyph: some View {
+        switch pacer.paceState {
+        case .speedUp:
+            chevronStack(symbolName: "chevron.up")
+        case .slowDown:
+            chevronStack(symbolName: "chevron.down")
+        case .notCalibrated, .waitingForData, .onPace:
+            Image(systemName: paceSymbol)
+                .font(.system(size: 96, weight: .bold))
+                .foregroundStyle(paceColor)
+        }
+    }
+
+    private func chevronStack(symbolName: String) -> some View {
+        HStack(spacing: 4) {
+            ForEach(0..<paceTier, id: \.self) { _ in
+                Image(systemName: symbolName)
+                    .font(.system(size: 56, weight: .heavy))
+            }
+        }
+        .foregroundStyle(paceColor.opacity(paceIntensity))
+        .symbolEffect(.pulse, isActive: paceTier >= 3)
+    }
+
+    /// 加速・減速の見込み秒数を3段階に分け、矢印の数・濃さの根拠にする。
+    private var paceTier: Int {
+        switch pacer.paceState {
+        case .speedUp(let seconds), .slowDown(let seconds):
+            if seconds > 2.5 { return 3 }
+            if seconds > 1.0 { return 2 }
+            return 1
+        default:
+            return 0
+        }
+    }
+
+    private var paceIntensity: Double {
+        switch paceTier {
+        case 1: return 0.5
+        case 2: return 0.75
+        default: return 1.0
         }
     }
 
@@ -155,23 +205,14 @@ struct ContentView: View {
         case .onPace:
             return nil
         case .speedUp(let seconds):
-            return String(format: "このペースだと %.1f 秒遅れて到着する見込みです", clampedSeconds(seconds))
+            return String(format: "このペースだと許容範囲より %.1f 秒遅れて到着する見込みです", clampedSeconds(seconds))
         case .slowDown(let seconds):
-            return String(format: "このペースだと %.1f 秒早く到着する見込みです", clampedSeconds(seconds))
+            return String(format: "このペースだと許容範囲より %.1f 秒早く到着する見込みです", clampedSeconds(seconds))
         }
     }
 
     private func clampedSeconds(_ seconds: Double) -> Double {
         min(seconds, 99.9)
-    }
-
-    private var isUrgentPace: Bool {
-        switch pacer.paceState {
-        case .speedUp(let s), .slowDown(let s):
-            return s > 1.5
-        default:
-            return false
-        }
     }
 
     // MARK: - 距離・速度

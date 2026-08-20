@@ -157,6 +157,24 @@ struct CalibrationView: View {
                 }
 
                 Section {
+                    Stepper(value: $pacer.greenZoneLowerSeconds, in: 0...5, step: 0.1) {
+                        LabeledContent("下限（遅れ）", value: String(format: "+%.1f 秒", pacer.greenZoneLowerSeconds))
+                    }
+                    Stepper(value: $pacer.greenZoneUpperSeconds, in: 0...10, step: 0.1) {
+                        LabeledContent("上限（遅れ）", value: String(format: "+%.1f 秒", pacer.greenZoneUpperSeconds))
+                    }
+                    Button("初期値（+0.5〜+2.0秒）にリセット") {
+                        pacer.greenZoneLowerSeconds = 0.5
+                        pacer.greenZoneUpperSeconds = 2.0
+                    }
+                    .font(.footnote)
+                } header: {
+                    Text("オンペース（緑）とみなす範囲")
+                } footer: {
+                    Text("目標タイムぴったり（0秒）ではなく、目標より少し遅れた範囲を「オンペース」とすることで、GPSの誤差などでラインを早く通過してしまう（ペナルティ対象になる）リスクを避けやすくします。上限を超えて遅れた場合は引き続き加速の指示になります。")
+                }
+
+                Section {
                     Text("運転中の操作は危険です。同乗者が操作するか、必ず停車中またはピット内で設定してください。スマートフォンのGPSには数m〜十数mの誤差があり、このアプリの表示はあくまで目安です。走行はドライバー自身の判断と責任で行ってください。")
                         .font(.caption)
                         .foregroundStyle(.secondary)

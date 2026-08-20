@@ -31,6 +31,28 @@ final class LapPacer {
         didSet { persistCoursePath() }
     }
 
+    /// 「オンペース」とみなす範囲の下限（目標タイムからの遅れ、秒）。
+    /// 目標ちょうど（0秒）ではなく少し遅れ側に余裕を持たせることで、GPSの誤差等でラインを
+    /// 早く通過してしまう（ペナルティ対象になる）リスクを避けやすくする。
+    var greenZoneLowerSeconds: Double = 0.5 {
+        didSet {
+            if greenZoneUpperSeconds < greenZoneLowerSeconds {
+                greenZoneUpperSeconds = greenZoneLowerSeconds
+            }
+            persistGreenZone()
+        }
+    }
+
+    /// 「オンペース」とみなす範囲の上限（目標タイムからの遅れ、秒）。これを超えると「加速」に切り替わる。
+    var greenZoneUpperSeconds: Double = 2.0 {
+        didSet {
+            if greenZoneUpperSeconds < greenZoneLowerSeconds {
+                greenZoneLowerSeconds = greenZoneUpperSeconds
+            }
+            persistGreenZone()
+        }
+    }
+
     // MARK: - リアルタイム状態（UI表示用）
 
     private(set) var currentSpeedKmh: Double?
@@ -40,12 +62,13 @@ final class LapPacer {
     private(set) var remainingToTarget: Double = 195
     private(set) var paceState: PaceState = .notCalibrated
     private(set) var laps: [LapRecord] = []
+    /// 現在の周が始まった時刻。UI側でGPSの更新頻度に関わらず滑らかにカウントダウン表示するために公開している。
+    private(set) var lapStartDate: Date?
 
     // MARK: - 内部状態
 
     /// コースパス上での現在の進行距離（コースパス未設定時はnil）。次回投影の探索窓の中心にも使う。
     private var lastPathDistance: Double?
-    private var lapStartDate: Date?
     private var lastCrossingDate: Date?
     private var previousLocation: CLLocation?
     private var previousAlong: Double?
@@ -59,8 +82,6 @@ final class LapPacer {
     /// 連続したクロス誤検出（GPSのジッターによる瞬間的な符号反転など）を防ぐための最小ラップ間隔（秒）。
     /// 短い周回でのテスト走行でも正しく毎周検出できるよう、実際のラップタイムより十分小さい値にしてある。
     private static let guardSeconds = 15.0
-    /// ペース差がこの範囲内なら「オンペース」とみなす不感帯（秒）
-    private static let deadband = 0.3
     /// この速度（m/s）未満では現在速度に基づく到達時刻の予測が不安定なため、ペース判定を保留する
     private static let minimumSpeedForPace = 1.0
     /// この精度（m）を超える位置情報フィックスは無視する
@@ -72,6 +93,8 @@ final class LapPacer {
         static let controlLine = "pace.controlLine"
         static let targetLapSeconds = "pace.targetLapSeconds"
         static let coursePath = "pace.coursePath"
+        static let greenZoneLowerSeconds = "pace.greenZoneLowerSeconds"
+        static let greenZoneUpperSeconds = "pace.greenZoneUpperSeconds"
     }
 
     init() {
@@ -87,6 +110,12 @@ final class LapPacer {
         if let data = defaults.data(forKey: DefaultsKey.coursePath),
            let decoded = try? JSONDecoder().decode(CoursePath.self, from: data) {
             coursePath = decoded
+        }
+        if defaults.object(forKey: DefaultsKey.greenZoneLowerSeconds) != nil {
+            greenZoneLowerSeconds = defaults.double(forKey: DefaultsKey.greenZoneLowerSeconds)
+        }
+        if defaults.object(forKey: DefaultsKey.greenZoneUpperSeconds) != nil {
+            greenZoneUpperSeconds = defaults.double(forKey: DefaultsKey.greenZoneUpperSeconds)
         }
         remainingToTarget = targetLapSeconds
         paceState = controlLine == nil ? .notCalibrated : .waitingForData
@@ -262,12 +291,14 @@ final class LapPacer {
         // delta > 0: このままだと目標より遅く着く(加速すべき) / delta < 0: 目標より早く着く(減速すべき)
         let delta = projectedTotalElapsed - targetLapSeconds
 
-        if abs(delta) <= Self.deadband {
+        // 「オンペース」は目標ちょうど(delta=0)ではなく、[greenZoneLowerSeconds, greenZoneUpperSeconds]の
+        // 遅れ側に寄せた範囲。目標より早く着く方向には余裕を持たせない（ペナルティ対象になりうるため）。
+        if delta > greenZoneUpperSeconds {
+            paceState = .speedUp(seconds: delta - greenZoneUpperSeconds)
+        } else if delta >= greenZoneLowerSeconds {
             paceState = .onPace
-        } else if delta > 0 {
-            paceState = .speedUp(seconds: delta)
         } else {
-            paceState = .slowDown(seconds: -delta)
+            paceState = .slowDown(seconds: greenZoneLowerSeconds - delta)
         }
     }
 
@@ -293,5 +324,11 @@ final class LapPacer {
         } else {
             defaults.removeObject(forKey: DefaultsKey.coursePath)
         }
+    }
+
+    private func persistGreenZone() {
+        let defaults = UserDefaults.standard
+        defaults.set(greenZoneLowerSeconds, forKey: DefaultsKey.greenZoneLowerSeconds)
+        defaults.set(greenZoneUpperSeconds, forKey: DefaultsKey.greenZoneUpperSeconds)
     }
 }
