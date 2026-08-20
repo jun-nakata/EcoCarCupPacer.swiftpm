@@ -6,11 +6,9 @@ import Observation
 ///
 /// 仕組み:
 /// 1. コントロールラインを1度キャリブレーション（通過した瞬間の位置と進行方向を記録）する。
-/// 2. 通過を検出するたびにラップを区切り、そのラップの走行軌跡（走行距離 → 経過時間）を記録する。
-/// 3. 完走した1周を「目標ラップタイムに換算」してスケール（例: 実際200秒で走った周を195/200倍）した
-///    ものを次周の基準ペース（お手本）として使い、以降のラップでは
-///    「今の走行距離に対して基準ペースでは何秒経過しているはずか」と実際の経過時間を比較して
-///    加速・減速を判定する。
+/// 2. 通過を検出するたびにラップを区切り、経過時間をリセットする。
+/// 3. 走行中は常に「今の速度を維持したまま残り距離を走ると、目標タイムより早く着くか・遅く着くか」を計算し、
+///    早く着く見込みなら減速、遅く着く見込みなら加速を指示する。過去の周回データに依存しないため、1周目から有効。
 ///
 /// 精度についての注意: スマートフォンのGPSは通常1Hz程度の更新頻度・数m〜十数mの誤差があるため、
 /// このアプリは「目安」であり、コンマ何秒の完全な精度を保証するものではない。
@@ -27,8 +25,8 @@ final class LapPacer {
     }
 
     /// あらかじめ定義された走行ライン（コントロールラインから1周分の点列）。
-    /// 設定されていれば、その経路に沿った距離を使って残り距離・基準ペースを計算する。
-    /// 未設定の場合は、直線距離や実走行のGPS軌跡を使う従来の方式にフォールバックする。
+    /// 設定されていれば、その経路に沿った距離を使って残り距離を計算する。
+    /// 未設定の場合は、コントロールラインまでの直線距離にフォールバックする。
     private(set) var coursePath: CoursePath? {
         didSet { persistCoursePath() }
     }
@@ -42,19 +40,9 @@ final class LapPacer {
     private(set) var remainingToTarget: Double = 195
     private(set) var paceState: PaceState = .notCalibrated
     private(set) var laps: [LapRecord] = []
-    private(set) var hasReferenceLap: Bool = false
 
     // MARK: - 内部状態
 
-    private var referenceLap: [ReferencePoint]? {
-        didSet {
-            hasReferenceLap = referenceLap != nil
-            persistReferenceLap()
-        }
-    }
-
-    private var currentLapPoints: [ReferencePoint] = []
-    private var odometerSinceCrossing: Double = 0
     /// コースパス上での現在の進行距離（コースパス未設定時はnil）。次回投影の探索窓の中心にも使う。
     private var lastPathDistance: Double?
     private var lapStartDate: Date?
@@ -68,14 +56,13 @@ final class LapPacer {
     private static let lateralTolerance = 30.0
     /// クロス判定時、直前・直後のフィックスがライン付近（この距離未満）にある必要がある（m）
     private static let proximityRadius = 150.0
-    /// 連続したクロス誤検出を防ぐための最小ラップ間隔（秒）
-    private static let guardSeconds = 90.0
+    /// 連続したクロス誤検出（GPSのジッターによる瞬間的な符号反転など）を防ぐための最小ラップ間隔（秒）。
+    /// 短い周回でのテスト走行でも正しく毎周検出できるよう、実際のラップタイムより十分小さい値にしてある。
+    private static let guardSeconds = 15.0
     /// ペース差がこの範囲内なら「オンペース」とみなす不感帯（秒）
     private static let deadband = 0.3
-    /// 基準ラップとして採用する最小ポイント数
-    private static let minimumReferencePoints = 15
-    /// 基準ラップとして採用する妥当なラップ時間の範囲（秒）
-    private static let plausibleLapRange = 60.0...600.0
+    /// この速度（m/s）未満では現在速度に基づく到達時刻の予測が不安定なため、ペース判定を保留する
+    private static let minimumSpeedForPace = 1.0
     /// この精度（m）を超える位置情報フィックスは無視する
     private static let maxAcceptableAccuracy = 50.0
 
@@ -84,7 +71,6 @@ final class LapPacer {
     private enum DefaultsKey {
         static let controlLine = "pace.controlLine"
         static let targetLapSeconds = "pace.targetLapSeconds"
-        static let referenceLap = "pace.referenceLap"
         static let coursePath = "pace.coursePath"
     }
 
@@ -98,16 +84,12 @@ final class LapPacer {
             let stored = defaults.double(forKey: DefaultsKey.targetLapSeconds)
             if stored > 0 { targetLapSeconds = stored }
         }
-        if let data = defaults.data(forKey: DefaultsKey.referenceLap),
-           let decoded = try? JSONDecoder().decode([ReferencePoint].self, from: data) {
-            referenceLap = decoded
-        }
         if let data = defaults.data(forKey: DefaultsKey.coursePath),
            let decoded = try? JSONDecoder().decode(CoursePath.self, from: data) {
             coursePath = decoded
         }
         remainingToTarget = targetLapSeconds
-        paceState = controlLine == nil ? .notCalibrated : .noReference
+        paceState = controlLine == nil ? .notCalibrated : .waitingForData
     }
 
     // MARK: - キャリブレーション
@@ -138,46 +120,35 @@ final class LapPacer {
 
     private func applyNewControlLine(_ line: ControlLine) {
         controlLine = line
-        referenceLap = nil
         laps = []
         lapStartDate = nil
         lastCrossingDate = nil
-        odometerSinceCrossing = 0
         lastPathDistance = nil
-        currentLapPoints = []
         previousAlong = nil
         elapsedSinceCrossing = 0
         remainingToTarget = targetLapSeconds
-        paceState = .noReference
+        paceState = .waitingForData
     }
 
-    /// 走行ライン（コースパス）を設定する。地図タップ、またはCSV/GPXの読み込みで作った点列を渡す。
-    /// 点にインポート時の経過秒が付いていれば、その軌跡をそのまま目標タイムに換算した基準ペースとして
-    /// 即座に採用する（実走行1周を待たずにペース判定が有効になる）。
+    /// 走行ライン（コースパス）を設定する。地図タップ、走って記録、またはCSV/GPXの読み込みで作った点列を渡す。
     func setCoursePath(_ path: CoursePath) {
         coursePath = path
-        if let imported = path.referencePoints(scaledToTargetSeconds: targetLapSeconds) {
-            referenceLap = imported
-        }
         lastPathDistance = lapStartDate != nil ? 0 : nil
     }
 
-    /// 走行ライン（コースパス）だけを消去する。コントロールラインや基準ペースはそのまま残る。
+    /// 走行ライン（コースパス）だけを消去する。コントロールラインはそのまま残る。
     func clearCoursePath() {
         coursePath = nil
         lastPathDistance = nil
     }
 
-    /// コントロールラインと基準ラップ・履歴をすべて消去する。走行ライン（コースパス）は残る。
+    /// コントロールラインと走行履歴をすべて消去する。走行ライン（コースパス）は残る。
     func resetControlLine() {
         controlLine = nil
-        referenceLap = nil
         laps = []
         lapStartDate = nil
         lastCrossingDate = nil
-        odometerSinceCrossing = 0
         lastPathDistance = nil
-        currentLapPoints = []
         previousAlong = nil
         elapsedSinceCrossing = 0
         remainingToTarget = targetLapSeconds
@@ -199,7 +170,7 @@ final class LapPacer {
         }
 
         // 走行ライン（コースパス）が設定されていれば、それに沿った距離を使う方が
-        // 直線距離や実測オドメーターより正確なので優先する。
+        // 直線距離より正確なので優先する。
         let pathProjection = (coursePath?.isUsable == true)
             ? coursePath?.project(location.coordinate, near: lastPathDistance)
             : nil
@@ -216,27 +187,9 @@ final class LapPacer {
         previousAlong = projection.along
 
         if let start = lapStartDate {
-            let elapsed = max(0, location.timestamp.timeIntervalSince(start))
-            elapsedSinceCrossing = elapsed
-            remainingToTarget = targetLapSeconds - elapsed
-
-            let progressDistance: Double
-            if let pathProjection {
-                progressDistance = pathProjection.distanceAlongPath
-                if currentLapPoints.last.map({ progressDistance - $0.distance > 0.5 }) ?? true {
-                    currentLapPoints.append(ReferencePoint(distance: progressDistance, time: elapsed))
-                }
-            } else {
-                if let prev = previousLocation {
-                    let delta = location.distance(from: prev)
-                    if delta > 1.0 {
-                        odometerSinceCrossing += delta
-                        currentLapPoints.append(ReferencePoint(distance: odometerSinceCrossing, time: elapsed))
-                    }
-                }
-                progressDistance = odometerSinceCrossing
-            }
-            updatePaceState(usingDistance: progressDistance)
+            elapsedSinceCrossing = max(0, location.timestamp.timeIntervalSince(start))
+            remainingToTarget = targetLapSeconds - elapsedSinceCrossing
+            updatePaceState()
         }
 
         previousLocation = location
@@ -277,11 +230,6 @@ final class LapPacer {
             let duration = date.timeIntervalSince(start)
             laps.insert(LapRecord(duration: duration, date: date), at: 0)
             if laps.count > 20 { laps.removeLast() }
-
-            if currentLapPoints.count >= Self.minimumReferencePoints, Self.plausibleLapRange.contains(duration) {
-                let scale = targetLapSeconds / duration
-                referenceLap = currentLapPoints.map { ReferencePoint(distance: $0.distance, time: $0.time * scale) }
-            }
         }
         startNewLap(at: date)
     }
@@ -289,24 +237,30 @@ final class LapPacer {
     private func startNewLap(at date: Date) {
         lapStartDate = date
         lastCrossingDate = date
-        odometerSinceCrossing = 0
         lastPathDistance = (coursePath?.isUsable == true) ? 0 : nil
-        currentLapPoints = []
         elapsedSinceCrossing = 0
         remainingToTarget = targetLapSeconds
-        paceState = hasReferenceLap ? .onPace : .noReference
+        paceState = .waitingForData
     }
 
     // MARK: - ペース判定
 
-    private func updatePaceState(usingDistance distance: Double) {
-        guard let reference = referenceLap, reference.count >= 2 else {
-            paceState = .noReference
+    /// 「今の速度のまま残り距離を走ると、目標タイムより早く着くか・遅く着くか」を判定する。
+    private func updatePaceState() {
+        guard let distance = distanceToLineMeters, let speedKmh = currentSpeedKmh else {
+            paceState = .waitingForData
             return
         }
-        let scheduled = scheduledTime(forDistance: distance, in: reference)
-        // delta > 0: 基準ペースより遅れている(加速すべき) / delta < 0: 進みすぎている(減速すべき)
-        let delta = elapsedSinceCrossing - scheduled
+        let speed = speedKmh / 3.6
+        guard speed >= Self.minimumSpeedForPace else {
+            paceState = .waitingForData
+            return
+        }
+
+        let projectedTimeToLine = distance / speed
+        let projectedTotalElapsed = elapsedSinceCrossing + projectedTimeToLine
+        // delta > 0: このままだと目標より遅く着く(加速すべき) / delta < 0: 目標より早く着く(減速すべき)
+        let delta = projectedTotalElapsed - targetLapSeconds
 
         if abs(delta) <= Self.deadband {
             paceState = .onPace
@@ -315,23 +269,6 @@ final class LapPacer {
         } else {
             paceState = .slowDown(seconds: -delta)
         }
-    }
-
-    private func scheduledTime(forDistance distance: Double, in reference: [ReferencePoint]) -> Double {
-        guard let first = reference.first, let last = reference.last else { return targetLapSeconds }
-        if distance <= first.distance { return first.time }
-        if distance >= last.distance { return last.time }
-
-        var lower = first
-        for point in reference {
-            if point.distance >= distance {
-                guard point.distance > lower.distance else { return point.time }
-                let t = (distance - lower.distance) / (point.distance - lower.distance)
-                return lower.time + t * (point.time - lower.time)
-            }
-            lower = point
-        }
-        return last.time
     }
 
     // MARK: - 永続化
@@ -347,15 +284,6 @@ final class LapPacer {
 
     private func persistTargetLapSeconds() {
         UserDefaults.standard.set(targetLapSeconds, forKey: DefaultsKey.targetLapSeconds)
-    }
-
-    private func persistReferenceLap() {
-        let defaults = UserDefaults.standard
-        if let reference = referenceLap, let data = try? JSONEncoder().encode(reference) {
-            defaults.set(data, forKey: DefaultsKey.referenceLap)
-        } else {
-            defaults.removeObject(forKey: DefaultsKey.referenceLap)
-        }
     }
 
     private func persistCoursePath() {

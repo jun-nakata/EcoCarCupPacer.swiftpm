@@ -34,6 +34,14 @@ struct CoursePathEditorView: View {
                                     .frame(width: index == 0 ? 14 : 8, height: index == 0 ? 14 : 8)
                             }
                         }
+                        if let line = pacer.controlLine {
+                            Annotation("コントロールライン", coordinate: line.coordinate) {
+                                Image(systemName: "flag.checkered.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.orange)
+                                    .background(Circle().fill(.white))
+                            }
+                        }
                         UserAnnotation()
                     }
                     .onTapGesture { screenPoint in
@@ -60,7 +68,7 @@ struct CoursePathEditorView: View {
                     } header: {
                         Text("地図をタップして設定")
                     } footer: {
-                        Text("赤い点がコントロールライン(1点目)です。そこから走行順に、コーナーの頂点や道なりの変化点を中心にタップして1周分の点を置き、最後はコントロールライン付近に戻してください。")
+                        Text("オレンジの旗が現在設定されているコントロールラインです。赤い点は走行ラインの1点目(通常はコントロールラインと同じ場所)。そこから走行順に、コーナーの頂点や道なりの変化点を中心にタップして1周分の点を置き、最後はコントロールライン付近に戻してください。")
                     }
 
                     Section {
@@ -83,7 +91,7 @@ struct CoursePathEditorView: View {
                     } header: {
                         Text("データロガー等から読み込む")
                     } footer: {
-                        Text("1行に「緯度,経度」または「緯度,経度,経過秒」（コントロールライン通過からの経過秒）を並べたCSV、またはGPXファイルに対応しています。経過秒つきで読み込むと、その軌跡がそのまま目標タイムに換算した基準ペースになります。読み込むと地図上の点はすべて置き換わります。")
+                        Text("1行に「緯度,経度」または「緯度,経度,経過秒」（コントロールライン通過からの経過秒）を並べたCSV、またはGPXファイルに対応しています。読み込むと地図上の点はすべて置き換わります。")
                     }
                 }
             }

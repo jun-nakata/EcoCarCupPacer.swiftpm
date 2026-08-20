@@ -13,6 +13,8 @@ struct CalibrationView: View {
     @State private var latitudeText: String = ""
     @State private var longitudeText: String = ""
     @State private var headingText: String = ""
+    @State private var targetMinutes = 3
+    @State private var targetSeconds = 15
 
     var body: some View {
         NavigationStack {
@@ -75,10 +77,6 @@ struct CalibrationView: View {
                         LabeledContent("緯度", value: String(format: "%.6f", line.latitude))
                         LabeledContent("経度", value: String(format: "%.6f", line.longitude))
                         LabeledContent("進行方向", value: String(format: "%.0f°", line.headingDegrees))
-                        LabeledContent("基準ラップ") {
-                            Text(pacer.hasReferenceLap ? "記録済み" : "未記録")
-                                .foregroundStyle(pacer.hasReferenceLap ? .green : .secondary)
-                        }
 
                         Button(role: .destructive) {
                             showingResetConfirmation = true
@@ -106,7 +104,7 @@ struct CalibrationView: View {
                         LabeledContent("点の数", value: "\(path.points.count)")
                         LabeledContent("コース長", value: String(format: "%.0f m", path.totalLength))
                         LabeledContent("タイム情報") {
-                            Text(path.referencePoints(scaledToTargetSeconds: pacer.targetLapSeconds) != nil ? "あり（インポート由来）" : "なし")
+                            Text(path.points.contains { $0.elapsedSeconds != nil } ? "あり" : "なし")
                                 .foregroundStyle(.secondary)
                         }
 
@@ -123,15 +121,33 @@ struct CalibrationView: View {
                 } header: {
                     Text("走行ライン（コースパス）")
                 } footer: {
-                    Text("実際に1周走って記録するか、地図をタップして点を置くか、GPSデータロガー等のGPX/CSVファイルを読み込んで、コントロールラインから1周分の走行ラインを設定できます。走って記録した場合はタイムも一緒に記録されるので、その場で基準ペースとしても使われます。設定は任意で、無くても従来通り動作します。")
+                    Text("実際に1周走って記録するか、地図をタップして点を置くか、GPSデータロガー等のGPX/CSVファイルを読み込んで、コントロールラインから1周分の走行ラインを設定できます。設定すると、コントロールラインまでの残り距離が直線距離ではなくこの経路に沿った距離になり、ペース判定もより正確になります。設定は任意で、無くても動作します。")
                 }
 
                 Section {
-                    Stepper(value: $pacer.targetLapSeconds, in: 60...600, step: 1) {
-                        LabeledContent("目標ラップタイム", value: targetTimeText)
+                    HStack {
+                        Picker("分", selection: $targetMinutes) {
+                            ForEach(0...10, id: \.self) { m in
+                                Text("\(m)分").tag(m)
+                            }
+                        }
+                        .pickerStyle(.wheel)
+
+                        Picker("秒", selection: $targetSeconds) {
+                            ForEach(0..<60, id: \.self) { s in
+                                Text(String(format: "%02d秒", s)).tag(s)
+                            }
+                        }
+                        .pickerStyle(.wheel)
                     }
+                    .frame(height: 130)
+                    .onChange(of: targetMinutes) { updateTargetLapSecondsFromPickers() }
+                    .onChange(of: targetSeconds) { updateTargetLapSecondsFromPickers() }
+
                     Button("3'15\"00 にリセット（Challenge 180）") {
-                        pacer.targetLapSeconds = 195
+                        targetMinutes = 3
+                        targetSeconds = 15
+                        updateTargetLapSecondsFromPickers()
                     }
                     .font(.footnote)
                 } header: {
@@ -180,10 +196,14 @@ struct CalibrationView: View {
                 CoursePathRecorderView(pacer: pacer, locationManager: locationManager)
             }
             .onAppear {
-                guard let line = pacer.controlLine, latitudeText.isEmpty else { return }
-                latitudeText = String(format: "%.6f", line.latitude)
-                longitudeText = String(format: "%.6f", line.longitude)
-                headingText = String(format: "%.0f", line.headingDegrees)
+                if let line = pacer.controlLine, latitudeText.isEmpty {
+                    latitudeText = String(format: "%.6f", line.latitude)
+                    longitudeText = String(format: "%.6f", line.longitude)
+                    headingText = String(format: "%.0f", line.headingDegrees)
+                }
+                let total = Int(pacer.targetLapSeconds)
+                targetMinutes = total / 60
+                targetSeconds = total % 60
             }
         }
     }
@@ -197,9 +217,7 @@ struct CalibrationView: View {
         return true
     }
 
-    private var targetTimeText: String {
-        let m = Int(pacer.targetLapSeconds) / 60
-        let s = Int(pacer.targetLapSeconds) % 60
-        return String(format: "%d'%02d\"00", m, s)
+    private func updateTargetLapSecondsFromPickers() {
+        pacer.targetLapSeconds = Double(targetMinutes * 60 + targetSeconds)
     }
 }

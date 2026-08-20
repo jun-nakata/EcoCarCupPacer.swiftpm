@@ -51,24 +51,17 @@ struct LapRecord: Identifiable, Codable {
     }
 }
 
-/// 基準ラップ（お手本ペース）上の1点。
-/// 「ライン通過からの走行距離」に対して「目標ラップタイムに換算した経過時間」を対応付ける。
-struct ReferencePoint: Codable {
-    let distance: Double
-    let time: Double
-}
-
 /// 現在のペース判定結果。
 enum PaceState: Equatable {
     /// コントロールラインが未設定
     case notCalibrated
-    /// 基準ラップがまだ無い（キャリブレーション後、最初の1周を走行中）
-    case noReference
+    /// 速度や距離のデータがまだ十分でない（低速・停止中、または位置情報の取得直後）
+    case waitingForData
     /// 目標ペース通り
     case onPace
-    /// 目標より遅れている → 加速すべき（差は秒）
+    /// このままでは目標より遅く着く → 加速すべき（見込みの差は秒）
     case speedUp(seconds: Double)
-    /// 目標より進みすぎている → 減速すべき（差は秒）
+    /// このままでは目標より早く着く → 減速すべき（見込みの差は秒）
     case slowDown(seconds: Double)
 }
 
@@ -139,18 +132,6 @@ struct CoursePath: Codable, Equatable {
         }
         guard let full = bestMatch(restrictToWindow: false) else { return nil }
         return (full.distance, full.lateral)
-    }
-
-    /// 点にインポート時の経過秒が付いている場合、それを目標ラップタイムに換算した基準ペースへ変換する。
-    func referencePoints(scaledToTargetSeconds target: Double) -> [ReferencePoint]? {
-        guard points.count > 1, let lastTime = points.last?.elapsedSeconds, lastTime > 0 else { return nil }
-        let distances = cumulativeDistances
-        var result: [ReferencePoint] = []
-        for (index, point) in points.enumerated() {
-            guard let time = point.elapsedSeconds else { continue }
-            result.append(ReferencePoint(distance: distances[index], time: time * target / lastTime))
-        }
-        return result.count >= 2 ? result : nil
     }
 
     /// 点a→bの線分に対する、点の垂直距離(m)と、a側からの内分率(0〜1)を返す。

@@ -119,7 +119,7 @@ struct ContentView: View {
     private var paceSymbol: String {
         switch pacer.paceState {
         case .notCalibrated: return "location.slash"
-        case .noReference: return "hourglass"
+        case .waitingForData: return "hourglass"
         case .onPace: return "checkmark.circle.fill"
         case .speedUp: return "arrow.up.circle.fill"
         case .slowDown: return "arrow.down.circle.fill"
@@ -129,7 +129,7 @@ struct ContentView: View {
     private var paceColor: Color {
         switch pacer.paceState {
         case .notCalibrated: return .gray
-        case .noReference: return .gray
+        case .waitingForData: return .gray
         case .onPace: return .green
         case .speedUp: return .blue
         case .slowDown: return .red
@@ -139,7 +139,7 @@ struct ContentView: View {
     private var paceLabel: String {
         switch pacer.paceState {
         case .notCalibrated: return "未設定"
-        case .noReference: return "基準ラップ計測中"
+        case .waitingForData: return "計測中"
         case .onPace: return "このペースでOK"
         case .speedUp: return "加速"
         case .slowDown: return "減速"
@@ -150,15 +150,19 @@ struct ContentView: View {
         switch pacer.paceState {
         case .notCalibrated:
             return "コントロールラインを設定してください"
-        case .noReference:
-            return "次の周からペース判定が有効になります"
+        case .waitingForData:
+            return "速度が上がるとペース判定が始まります"
         case .onPace:
             return nil
         case .speedUp(let seconds):
-            return String(format: "基準より %.1f 秒遅れています", seconds)
+            return String(format: "このペースだと %.1f 秒遅れて到着する見込みです", clampedSeconds(seconds))
         case .slowDown(let seconds):
-            return String(format: "基準より %.1f 秒進みすぎています", seconds)
+            return String(format: "このペースだと %.1f 秒早く到着する見込みです", clampedSeconds(seconds))
         }
+    }
+
+    private func clampedSeconds(_ seconds: Double) -> Double {
+        min(seconds, 99.9)
     }
 
     private var isUrgentPace: Bool {
