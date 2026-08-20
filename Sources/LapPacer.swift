@@ -101,16 +101,39 @@ final class LapPacer {
     /// コントロールラインを通過した瞬間に呼ぶ。現在地と進行方向をラインとして記録し、ラップ計測を開始する。
     func recordControlLine(using location: CLLocation) {
         let heading = location.course >= 0 ? location.course : (previousLocation?.course ?? 0)
-        controlLine = ControlLine(
+        applyNewControlLine(ControlLine(
             latitude: location.coordinate.latitude,
             longitude: location.coordinate.longitude,
             headingDegrees: heading
-        )
-        referenceLap = nil
-        laps = []
+        ))
         startNewLap(at: location.timestamp)
         previousLocation = location
         previousAlong = 0
+    }
+
+    /// 地図等で調べた座標を手入力してコントロールラインとして設定する。
+    /// 実際に通過して記録する方式より誤差が大きくなりうるため、可能であれば後で通過記録に置き換えるのが望ましい。
+    /// この場合、現在地はライン上にあるとは限らないためラップ計測はまだ開始せず、次に実際にラインを通過した時点から始まる。
+    func setControlLine(latitude: Double, longitude: Double, headingDegrees: Double) {
+        applyNewControlLine(ControlLine(
+            latitude: latitude,
+            longitude: longitude,
+            headingDegrees: headingDegrees
+        ))
+    }
+
+    private func applyNewControlLine(_ line: ControlLine) {
+        controlLine = line
+        referenceLap = nil
+        laps = []
+        lapStartDate = nil
+        lastCrossingDate = nil
+        odometerSinceCrossing = 0
+        currentLapPoints = []
+        previousAlong = nil
+        elapsedSinceCrossing = 0
+        remainingToTarget = targetLapSeconds
+        paceState = .noReference
     }
 
     /// コントロールラインと基準ラップ・履歴をすべて消去する。

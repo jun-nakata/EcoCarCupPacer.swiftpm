@@ -7,6 +7,9 @@ struct CalibrationView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var showingResetConfirmation = false
+    @State private var latitudeText: String = ""
+    @State private var longitudeText: String = ""
+    @State private var headingText: String = ""
 
     var body: some View {
         NavigationStack {
@@ -36,7 +39,32 @@ struct CalibrationView: View {
                             .foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("コントロールライン")
+                    Text("コントロールライン（走行中に通過して設定）")
+                }
+
+                Section {
+                    Text("Google Mapなどでラインの位置を長押しすると表示される座標をコピーして貼り付けてください。進行方向は、地図上でラインを通過する向きを、真北を0°として時計回りの角度（0〜360°）でおおよそ入力してください。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    TextField("緯度（例: 35.371700）", text: $latitudeText)
+                        .keyboardType(.numbersAndPunctuation)
+                    TextField("経度（例: 138.927000）", text: $longitudeText)
+                        .keyboardType(.numbersAndPunctuation)
+                    TextField("進行方向（0〜360°、真北=0°）", text: $headingText)
+                        .keyboardType(.numbersAndPunctuation)
+
+                    Button("この座標をコントロールラインに設定") {
+                        guard let latitude = Double(latitudeText),
+                              let longitude = Double(longitudeText),
+                              let heading = Double(headingText) else { return }
+                        pacer.setControlLine(latitude: latitude, longitude: longitude, headingDegrees: heading)
+                    }
+                    .disabled(!manualCoordinatesAreValid)
+                } header: {
+                    Text("座標を手入力して設定")
+                } footer: {
+                    Text("実際に通過して設定する方法より誤差が大きくなる場合があります。可能であれば、走行中に実際に通過して設定し直すことをおすすめします。")
                 }
 
                 if let line = pacer.controlLine {
@@ -96,7 +124,22 @@ struct CalibrationView: View {
                 }
                 Button("キャンセル", role: .cancel) {}
             }
+            .onAppear {
+                guard let line = pacer.controlLine, latitudeText.isEmpty else { return }
+                latitudeText = String(format: "%.6f", line.latitude)
+                longitudeText = String(format: "%.6f", line.longitude)
+                headingText = String(format: "%.0f", line.headingDegrees)
+            }
         }
+    }
+
+    private var manualCoordinatesAreValid: Bool {
+        guard let latitude = Double(latitudeText), (-90...90).contains(latitude),
+              let longitude = Double(longitudeText), (-180...180).contains(longitude),
+              let heading = Double(headingText), (0...360).contains(heading) else {
+            return false
+        }
+        return true
     }
 
     private var targetTimeText: String {
