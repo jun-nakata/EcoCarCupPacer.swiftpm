@@ -8,6 +8,7 @@ struct CalibrationView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showingResetConfirmation = false
     @State private var showingCoursePathEditor = false
+    @State private var showingCoursePathRecorder = false
     @State private var showingCoursePathResetConfirmation = false
     @State private var latitudeText: String = ""
     @State private var longitudeText: String = ""
@@ -91,6 +92,11 @@ struct CalibrationView: View {
 
                 Section {
                     Button {
+                        showingCoursePathRecorder = true
+                    } label: {
+                        Label("走行ラインを走って記録", systemImage: "record.circle")
+                    }
+                    Button {
                         showingCoursePathEditor = true
                     } label: {
                         Label("走行ラインを編集", systemImage: "map")
@@ -117,7 +123,7 @@ struct CalibrationView: View {
                 } header: {
                     Text("走行ライン（コースパス）")
                 } footer: {
-                    Text("地図をタップして点を置くか、GPSデータロガー等のGPX/CSVファイルを読み込んで、コントロールラインから1周分の走行ラインを設定できます。設定は任意で、無くても従来通り動作します。")
+                    Text("実際に1周走って記録するか、地図をタップして点を置くか、GPSデータロガー等のGPX/CSVファイルを読み込んで、コントロールラインから1周分の走行ラインを設定できます。走って記録した場合はタイムも一緒に記録されるので、その場で基準ペースとしても使われます。設定は任意で、無くても従来通り動作します。")
                 }
 
                 Section {
@@ -169,6 +175,9 @@ struct CalibrationView: View {
             }
             .sheet(isPresented: $showingCoursePathEditor) {
                 CoursePathEditorView(pacer: pacer, locationManager: locationManager)
+            }
+            .sheet(isPresented: $showingCoursePathRecorder) {
+                CoursePathRecorderView(pacer: pacer, locationManager: locationManager)
             }
             .onAppear {
                 guard let line = pacer.controlLine, latitudeText.isEmpty else { return }
