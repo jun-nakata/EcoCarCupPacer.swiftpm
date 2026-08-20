@@ -12,7 +12,7 @@ let package = Package(
         .iOSApplication(
             name: "Eco Car Cup Pacer",
             targets: ["AppModule"],
-            bundleIdentifier: "com.example.Test2",
+            bundleIdentifier: "com.example.EcoCarCupPacer",
             teamIdentifier: "",
             displayVersion: "1.0",
             bundleVersion: "1",
