@@ -27,6 +27,9 @@ let package = Package(
                 .landscapeRight,
                 .landscapeLeft,
                 .portraitUpsideDown(.when(deviceFamilies: [.pad]))
+            ],
+            capabilities: [
+                .locationWhenInUse(purposeString: "コントロールラインまでの距離とペース判定のために、走行中の現在地を使用します。")
             ]
         )
     ],
